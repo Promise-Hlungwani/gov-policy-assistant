@@ -101,7 +101,7 @@ class DocumentService:
                 version_number=version_number,
                 filename=safe_filename,
                 checksum=sha256(content).hexdigest(),
-                source_filename=safe_filename,
+                source_file_key=safe_filename,
                 created_by=actor.id,
                 index_status="pending",
             )

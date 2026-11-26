@@ -38,4 +38,9 @@ class DocumentChunk(BaseModel):
     chunk_index: int
     text: str
     page_number: int | None = None
+    section_title: str | None = None
     vector_point_id: str | None = None
+    document_title: str | None = None
+    document_filename: str | None = None
+    version_number: int | None = None
+    similarity: float | None = None

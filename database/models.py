@@ -82,7 +82,7 @@ class DocumentVersionORM(Base):
     version_number: Mapped[int] = mapped_column(Integer)
     filename: Mapped[str] = mapped_column(String(500))
     checksum: Mapped[str] = mapped_column(String(128))
-    source_filename: Mapped[str] = mapped_column(String(500))
+    source_file_key: Mapped[str] = mapped_column(String(1000))
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     index_status: Mapped[str] = mapped_column(String(20), default="pending")
     created_at: Mapped[datetime] = mapped_column(

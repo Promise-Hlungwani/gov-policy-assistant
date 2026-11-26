@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PreparedIngestion:
+    filename: str
     chunks: list[DocumentChunk]
     vectors: list[list[float]]
 
@@ -57,7 +58,7 @@ class DocumentIngestionService:
             raise
 
         pages = [
-            (page.page_number, page.text)
+            (page.page_number, page.section_title, page.text)
             for page in parsed_pages
             if page.text.strip()
         ]
@@ -105,7 +106,11 @@ class DocumentIngestionService:
             document_version_id,
             len(chunks),
         )
-        return PreparedIngestion(chunks=chunks, vectors=vectors)
+        return PreparedIngestion(
+            filename=filename,
+            chunks=chunks,
+            vectors=vectors,
+        )
 
     def index(
         self,
@@ -127,6 +132,7 @@ class DocumentIngestionService:
                 prepared.vectors,
                 classification=classification,
                 document_title=document_title,
+                document_filename=prepared.filename,
                 version_number=version_number,
             )
         except (VectorStoreError, ValueError) as exc:

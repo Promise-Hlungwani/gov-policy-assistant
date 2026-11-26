@@ -3,7 +3,14 @@
 Streamlit application for uploading policy documents and preparing them for
 source-grounded search. The upload workflow extracts PDF/DOCX text, stores
 document metadata and chunks in PostgreSQL, creates Sentence Transformers
-embeddings, and indexes passages in Qdrant Cloud.
+embeddings, and indexes passages in Qdrant Cloud. The chat workflow filters
+retrieval by the authenticated user's role, asks Groq Llama to answer from
+retrieved passages, and returns document, version, section, and page citations.
+
+If no authorized passage meets the configured `RAG_MIN_SIMILARITY` threshold,
+the assistant returns:
+
+> I could not find this information in the approved document repository.
 
 ## Upload workflow
 

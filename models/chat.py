@@ -11,13 +11,17 @@ class ChatRequest(BaseModel):
 class SourceCitation(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
+    citation_id: int
     document_id: UUID
     document_version_id: UUID
     document_title: str
-    version_number: int
+    document_filename: str
+    version_number: int | None
+    section_title: str
     page_number: int | None = None
     chunk_id: UUID
     excerpt: str
+    similarity: float
 
 
 class ChatResponse(BaseModel):

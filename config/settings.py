@@ -1,4 +1,4 @@
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     max_upload_size_mb: int = 50
+    rag_min_similarity: float = Field(default=0.35, ge=0.0, le=1.0)
+    rag_top_k: int = Field(default=5, ge=1, le=20)
 
 
 settings = Settings()

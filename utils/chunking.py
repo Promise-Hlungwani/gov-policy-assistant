@@ -6,7 +6,7 @@ from models.document import DocumentChunk
 def chunk_pages(
     document_id: UUID,
     document_version_id: UUID,
-    pages: list[tuple[int | None, str]],
+    pages: list[tuple[int | None, str | None, str]],
     *,
     chunk_size: int = 1200,
     overlap: int = 200,
@@ -15,7 +15,7 @@ def chunk_pages(
         raise ValueError("Chunk size must be positive and overlap smaller than chunk size.")
 
     chunks: list[DocumentChunk] = []
-    for page_number, page_text in pages:
+    for page_number, section_title, page_text in pages:
         text = " ".join(page_text.split())
         start = 0
         while start < len(text):
@@ -34,6 +34,7 @@ def chunk_pages(
                         chunk_index=len(chunks),
                         text=chunk_text,
                         page_number=page_number,
+                        section_title=section_title,
                     )
                 )
             if end >= len(text):

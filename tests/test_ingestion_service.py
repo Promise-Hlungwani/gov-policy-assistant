@@ -1,11 +1,5 @@
-import os
 import unittest
 from uuid import uuid4
-
-os.environ.setdefault(
-    "DATABASE_URL",
-    "postgresql+psycopg2://test:test@localhost/test",
-)
 
 from models.access import DocumentClassification
 from services.ingestion_service import DocumentIngestionService

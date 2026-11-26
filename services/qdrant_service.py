@@ -66,6 +66,7 @@ class QdrantService:
         *,
         classification: DocumentClassification,
         document_title: str,
+        document_filename: str,
         version_number: int,
     ) -> None:
         if len(chunks) != len(vectors):
@@ -87,9 +88,11 @@ class QdrantService:
                         "document_version_id": str(chunk.document_version_id),
                         "chunk_index": chunk.chunk_index,
                         "page_number": chunk.page_number,
+                        "section_title": chunk.section_title,
                         "text": chunk.text,
                         "classification": classification.value,
                         "document_title": document_title,
+                        "document_filename": document_filename,
                         "version_number": version_number,
                     },
                 )
@@ -116,41 +119,64 @@ class QdrantService:
             return []
         if limit <= 0:
             raise ValueError("Search limit must be greater than zero.")
-        client = _client()
-        if not client.collection_exists(COLLECTION_NAME):
-            return []
-        results = client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=query_vector,
-            query_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="classification",
-                        match=models.MatchAny(
-                            any=[item.value for item in authorized_classifications]
-                        ),
-                    )
-                ]
-            ),
-            limit=limit,
-            with_payload=True,
-        ).points
+        try:
+            client = _client()
+            if not client.collection_exists(COLLECTION_NAME):
+                return []
+            results = client.query_points(
+                collection_name=COLLECTION_NAME,
+                query=query_vector,
+                query_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="classification",
+                            match=models.MatchAny(
+                                any=[
+                                    item.value
+                                    for item in authorized_classifications
+                                ]
+                            ),
+                        )
+                    ]
+                ),
+                limit=limit,
+                with_payload=True,
+            ).points
+        except (UnexpectedResponse, httpx.HTTPError) as exc:
+            raise VectorStoreError("Qdrant search request failed.") from exc
         chunks = []
         for point in results:
             payload = point.payload
             if payload is None:
                 continue
-            chunks.append(
-                DocumentChunk(
-                    id=UUID(payload["chunk_id"]),
-                    document_id=UUID(payload["document_id"]),
-                    document_version_id=UUID(payload["document_version_id"]),
-                    chunk_index=payload["chunk_index"],
-                    text=payload["text"],
-                    page_number=payload.get("page_number"),
-                    vector_point_id=str(point.id),
+            try:
+                page_number = payload.get("page_number")
+                chunks.append(
+                    DocumentChunk(
+                        id=UUID(payload["chunk_id"]),
+                        document_id=UUID(payload["document_id"]),
+                        document_version_id=UUID(payload["document_version_id"]),
+                        chunk_index=payload["chunk_index"],
+                        text=payload["text"],
+                        page_number=page_number,
+                        section_title=payload.get("section_title")
+                        or (
+                            f"Page {page_number}"
+                            if page_number is not None
+                            else "Document body"
+                        ),
+                        vector_point_id=str(point.id),
+                        document_title=payload.get("document_title")
+                        or payload.get("filename", "Policy document"),
+                        document_filename=payload.get("document_filename")
+                        or payload.get("filename")
+                        or payload.get("document_title", "Unknown"),
+                        version_number=payload.get("version_number"),
+                        similarity=float(point.score or 0.0),
+                    )
                 )
-            )
+            except (KeyError, TypeError, ValueError) as exc:
+                raise VectorStoreError("Qdrant returned an invalid source payload.") from exc
         return chunks
 
     def delete_version(self, document_version_id: UUID) -> None:
