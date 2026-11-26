@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from database.models import DocumentChunkORM, DocumentORM, DocumentVersionORM
 from models.access import DocumentClassification
-from models.document import DocumentVersion
+from models.document import DocumentLifecycleStatus, DocumentVersion
 from repositories.sqlalchemy_document_repository import SQLAlchemyDocumentRepository
 from services.audit_service import AuditService
 from services.auth_service import AuthService
@@ -48,6 +48,7 @@ class DocumentService:
         version_number: int,
         classification: DocumentClassification,
         auth_subject: str,
+        lifecycle_status: DocumentLifecycleStatus = DocumentLifecycleStatus.CURRENT,
     ) -> DocumentVersion:
         safe_filename = Path(filename).name
         normalized_title = title.strip()
@@ -57,6 +58,10 @@ class DocumentService:
             raise ValueError("Document title must be 500 characters or fewer.")
         if version_number < 1:
             raise ValueError("Version number must be a positive integer.")
+        if not isinstance(lifecycle_status, DocumentLifecycleStatus) or (
+            lifecycle_status == DocumentLifecycleStatus.SUPERSEDED
+        ):
+            raise ValueError("Choose Draft or Current for a new document version.")
         extension = Path(safe_filename).suffix.lower()
         mime_type_by_extension = {
             ".pdf": "application/pdf",
@@ -95,6 +100,15 @@ class DocumentService:
                     f"Version {version_number} already exists for this document."
                 )
 
+            superseded_version = None
+            if lifecycle_status == DocumentLifecycleStatus.CURRENT:
+                superseded_version = self.repository.get_current_version(document.id)
+                if superseded_version is not None:
+                    superseded_version.lifecycle_status = (
+                        DocumentLifecycleStatus.SUPERSEDED.value
+                    )
+                    self.session.flush()
+
             version = DocumentVersionORM(
                 id=uuid4(),
                 document_id=document.id,
@@ -104,6 +118,7 @@ class DocumentService:
                 source_file_key=safe_filename,
                 created_by=actor.id,
                 index_status="pending",
+                lifecycle_status=lifecycle_status.value,
             )
             self.repository.add_version(version)
             document.filename = safe_filename
@@ -135,6 +150,12 @@ class DocumentService:
                 title=normalized_title,
                 classification=classification.value,
                 version_number=version_number,
+                lifecycle_status=lifecycle_status,
+                superseded_version_number=(
+                    superseded_version.version_number
+                    if superseded_version is not None
+                    else None
+                ),
             )
             version_id = version.id
 

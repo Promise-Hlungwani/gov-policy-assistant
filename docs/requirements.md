@@ -51,6 +51,11 @@ able to retrieve documents or excerpts they are not authorized to access.
 - Include source citations that identify the supporting document and version.
 - Track document versions so answers and citations can be associated with the
   correct version.
+- Let uploaders mark a version Draft or Current. A document may have at most
+  one Current version; making a new version Current supersedes the existing
+  Current version. Draft uploads do not change other version states.
+- Prefer Current versions during retrieval, then Draft, then Superseded.
+- Warn users when an answer cites a Draft or Superseded version.
 - Apply RBAC to document access and administrative functionality.
 - Record security-relevant actions in an audit log, including uploads,
   document/version changes, searches, and administrative actions.
@@ -67,6 +72,9 @@ able to retrieve documents or excerpts they are not authorized to access.
   to generate the answer.
 - Return the fallback response when the best retrieved similarity score is below
   the configured confidence threshold.
+- Prefer Current document versions over Draft and Superseded versions, and
+  include a user-visible warning when cited information comes from a Draft or
+  Superseded version.
 
 ## 6. Technology stack
 

@@ -6,7 +6,7 @@ from uuid import uuid4
 from database.models import AuditEventORM
 from models.access import UserRole
 from models.chat import ChatRequest
-from models.document import DocumentChunk
+from models.document import DocumentChunk, DocumentLifecycleStatus
 from services.audit_service import AuditService
 from services.rag_service import FALLBACK_ANSWER, RAGService
 
@@ -38,6 +38,20 @@ class FakeAuditService:
         self.events.append(event)
 
 
+class FakeDocumentRepository:
+    def __init__(self, chunks: list[DocumentChunk]) -> None:
+        self.statuses = {
+            chunk.document_version_id: chunk.lifecycle_status for chunk in chunks
+        }
+
+    def get_version_statuses(self, version_ids):
+        return {
+            version_id: self.statuses[version_id]
+            for version_id in version_ids
+            if version_id in self.statuses
+        }
+
+
 class FakeEmbeddingService:
     def embed_query(self, query: str) -> list[float]:
         return [0.1, 0.2, 0.3]
@@ -63,7 +77,10 @@ class FakeLLMService:
         return self.answer_text
 
 
-def make_chunk(similarity: float = 0.9) -> DocumentChunk:
+def make_chunk(
+    similarity: float = 0.9,
+    lifecycle_status: DocumentLifecycleStatus = DocumentLifecycleStatus.CURRENT,
+) -> DocumentChunk:
     return DocumentChunk(
         id=uuid4(),
         document_id=uuid4(),
@@ -75,6 +92,7 @@ def make_chunk(similarity: float = 0.9) -> DocumentChunk:
         document_title="Benefits Policy",
         document_filename="benefits-policy.pdf",
         version_number=3,
+        lifecycle_status=lifecycle_status,
         similarity=similarity,
     )
 
@@ -95,6 +113,7 @@ class RAGServiceTests(unittest.TestCase):
             FakeSession(),
             auth_service=FakeAuthService(self.user),
             audit_service=self.audit,
+            document_repository=FakeDocumentRepository(chunks),
             embedding_service=FakeEmbeddingService(),
             vector_store=self.vector_store,
             llm_service=self.llm,
@@ -154,6 +173,10 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(response.answer, "Supported answer [1]")
         self.assertEqual(response.citations[0].document_filename, "benefits-policy.pdf")
         self.assertEqual(response.citations[0].version_number, 3)
+        self.assertEqual(
+            response.citations[0].lifecycle_status,
+            DocumentLifecycleStatus.CURRENT,
+        )
         self.assertEqual(response.citations[0].section_title, "Eligibility")
         self.assertIn("benefits-policy.pdf", self.llm.calls[0][1])
         self.assertIn("Section: Eligibility", self.llm.calls[0][1])
@@ -169,10 +192,12 @@ class RAGServiceTests(unittest.TestCase):
                     "name": "benefits-policy.pdf",
                     "title": "Benefits Policy",
                     "version_number": 3,
+                    "lifecycle_status": "current",
                     "sections": [{"section": "Eligibility", "page": 4}],
                 }
             ],
         )
+        self.assertEqual(response.warnings, [])
 
     def test_rejects_answer_with_unknown_citation(self) -> None:
         service = self.build_service([make_chunk()], answer="Unsupported claim [99]")
@@ -186,6 +211,54 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(response.citations, [])
         self.assertEqual(len(self.audit.events), 1)
         self.assertEqual(len(self.audit.events[0]["documents_accessed"]), 1)
+
+    def test_prioritizes_current_sources_over_higher_scoring_drafts(self) -> None:
+        current = make_chunk(
+            similarity=0.5,
+            lifecycle_status=DocumentLifecycleStatus.CURRENT,
+        )
+        draft = make_chunk(
+            similarity=0.95,
+            lifecycle_status=DocumentLifecycleStatus.DRAFT,
+        )
+        service = self.build_service([draft, current])
+
+        response = service.answer(
+            ChatRequest(question="When does eligibility begin?"),
+            auth_subject="trusted-subject",
+        )
+
+        self.assertEqual(
+            response.citations[0].lifecycle_status,
+            DocumentLifecycleStatus.CURRENT,
+        )
+        self.assertEqual(response.warnings, [])
+
+    def test_warns_when_answer_uses_draft_and_superseded_versions(self) -> None:
+        draft = make_chunk(lifecycle_status=DocumentLifecycleStatus.DRAFT)
+        superseded = make_chunk(
+            lifecycle_status=DocumentLifecycleStatus.SUPERSEDED
+        )
+        service = self.build_service(
+            [draft, superseded],
+            answer="Draft claim [1]. Older policy claim [2].",
+        )
+
+        response = service.answer(
+            ChatRequest(question="Summarize the available rules."),
+            auth_subject="trusted-subject",
+        )
+
+        self.assertEqual(len(response.warnings), 2)
+        self.assertIn("draft document", response.warnings[0])
+        self.assertIn("superseded document", response.warnings[1])
+        self.assertEqual(
+            [citation.lifecycle_status for citation in response.citations],
+            [
+                DocumentLifecycleStatus.DRAFT,
+                DocumentLifecycleStatus.SUPERSEDED,
+            ],
+        )
 
 
 class ChatAuditTests(unittest.TestCase):
@@ -211,6 +284,7 @@ class ChatAuditTests(unittest.TestCase):
             answer="It begins on the effective date [1].",
             documents_accessed=documents_accessed,
             conversation_id=conversation_id,
+            warnings=["Draft source warning"],
         )
 
         event = session.added[0]
@@ -225,6 +299,7 @@ class ChatAuditTests(unittest.TestCase):
                 "question": "When does eligibility begin?",
                 "answer": "It begins on the effective date [1].",
                 "documents_accessed": documents_accessed,
+                "warnings": ["Draft source warning"],
             },
         )
         self.assertIsNotNone(AuditEventORM.__table__.c.created_at.server_default)

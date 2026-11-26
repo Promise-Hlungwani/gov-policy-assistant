@@ -2,9 +2,11 @@ from datetime import datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     Enum as SqlEnum,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -12,11 +14,13 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from database.base import Base
 from models.access import DocumentClassification, UserRole
+from models.document import DocumentLifecycleStatus
 
 
 class UserORM(Base):
@@ -75,6 +79,17 @@ class DocumentVersionORM(Base):
         UniqueConstraint(
             "document_id", "version_number", name="uq_document_versions_number"
         ),
+        CheckConstraint(
+            "lifecycle_status IN ('draft', 'current', 'superseded')",
+            name="ck_document_versions_lifecycle_status",
+        ),
+        Index(
+            "uq_document_versions_one_current",
+            "document_id",
+            unique=True,
+            postgresql_where=text("lifecycle_status = 'current'"),
+            sqlite_where=text("lifecycle_status = 'current'"),
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
@@ -85,6 +100,12 @@ class DocumentVersionORM(Base):
     source_file_key: Mapped[str] = mapped_column(String(1000))
     created_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     index_status: Mapped[str] = mapped_column(String(20), default="pending")
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(20),
+        default=DocumentLifecycleStatus.CURRENT.value,
+        server_default=text("'current'"),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

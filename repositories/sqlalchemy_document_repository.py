@@ -4,6 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database.models import DocumentChunkORM, DocumentORM, DocumentVersionORM
+from models.document import DocumentLifecycleStatus
 
 
 class SQLAlchemyDocumentRepository:
@@ -30,6 +31,31 @@ class SQLAlchemyDocumentRepository:
             )
             is not None
         )
+
+    def get_current_version(self, document_id: UUID) -> DocumentVersionORM | None:
+        return self.session.scalar(
+            select(DocumentVersionORM).where(
+                DocumentVersionORM.document_id == document_id,
+                DocumentVersionORM.lifecycle_status
+                == DocumentLifecycleStatus.CURRENT.value,
+            )
+        )
+
+    def get_version_statuses(
+        self, version_ids: set[UUID]
+    ) -> dict[UUID, DocumentLifecycleStatus]:
+        if not version_ids:
+            return {}
+        rows = self.session.execute(
+            select(
+                DocumentVersionORM.id,
+                DocumentVersionORM.lifecycle_status,
+            ).where(DocumentVersionORM.id.in_(version_ids))
+        )
+        return {
+            version_id: DocumentLifecycleStatus(status)
+            for version_id, status in rows
+        }
 
     def add_document(self, document: DocumentORM) -> None:
         self.session.add(document)

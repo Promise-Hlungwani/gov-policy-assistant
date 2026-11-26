@@ -19,6 +19,10 @@ the assistant returns:
 - Role permissions control the available classifications and are checked again
   by the backend service.
 - Documents are versioned by owner, title, and the submitted version number.
+- Uploaders choose Draft or Current. A new Current version supersedes the
+  previous Current version; Draft uploads never change the current version.
+- Retrieval prioritizes Current, then Draft, then Superseded versions and warns
+  when cited information comes from a Draft or Superseded version.
 - A document's classification cannot change between versions.
 - The original file is not retained; extracted text chunks, metadata, checksum,
   and audit event are stored. Qdrant indexing status is stored with the version.
@@ -57,6 +61,12 @@ example, provision an administrator from a trusted SQL session:
 INSERT INTO users (id, auth_subject, email, display_name, role, is_active)
 VALUES (gen_random_uuid(), '<verified-oidc-sub>', '<email>', '<name>', 'administrator', true);
 ```
+
+For an existing database, apply
+[`migrations/001_document_lifecycle_status.sql`](./migrations/001_document_lifecycle_status.sql)
+in the Neon SQL editor before deploying this version. The migration treats the
+highest existing version number as Current and earlier versions as Superseded.
+New databases receive the lifecycle column from the ORM schema.
 
 Run the app with:
 

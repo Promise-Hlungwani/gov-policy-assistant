@@ -2,6 +2,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from models.document import DocumentLifecycleStatus
+
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
@@ -22,9 +24,11 @@ class SourceCitation(BaseModel):
     chunk_id: UUID
     excerpt: str
     similarity: float
+    lifecycle_status: DocumentLifecycleStatus = DocumentLifecycleStatus.CURRENT
 
 
 class ChatResponse(BaseModel):
     conversation_id: UUID | None = None
     answer: str
     citations: list[SourceCitation] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)

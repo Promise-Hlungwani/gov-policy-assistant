@@ -47,10 +47,11 @@ def _show_sources(citations: list[dict]) -> None:
                 else ""
             )
             version = citation.get("version_number") or "unknown"
+            lifecycle_status = citation["lifecycle_status"].replace("_", " ").title()
             st.markdown(
                 f"**[{citation['citation_id']}] {citation['document_title']}**  \n"
                 f"{citation['document_filename']} · "
-                f"Version {version} · "
+                f"Version {version} · {lifecycle_status} · "
                 f"Section: {citation['section_title']}{page}"
             )
             st.caption(citation["excerpt"])
@@ -60,6 +61,8 @@ for message in st.session_state.chat_messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
         if message["role"] == "assistant":
+            for warning in message.get("warnings", []):
+                st.warning(warning)
             _show_sources(message.get("citations", []))
 
 question = st.chat_input("Ask a question about approved policy documents")
@@ -79,6 +82,8 @@ if question:
                         auth_subject=auth_subject,
                     )
                 st.markdown(response.answer)
+                for warning in response.warnings:
+                    st.warning(warning)
                 citations = [
                     citation.model_dump(mode="json")
                     for citation in response.citations
@@ -89,6 +94,7 @@ if question:
                         "role": "assistant",
                         "content": response.answer or FALLBACK_ANSWER,
                         "citations": citations,
+                        "warnings": response.warnings,
                     }
                 )
             except PermissionError as exc:

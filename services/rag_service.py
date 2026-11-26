@@ -8,6 +8,8 @@ from sqlalchemy.orm import Session
 from config.settings import settings
 from database.models import UserORM
 from models.chat import ChatRequest, ChatResponse, SourceCitation
+from models.document import DocumentLifecycleStatus
+from repositories.sqlalchemy_document_repository import SQLAlchemyDocumentRepository
 from services.auth_service import AuthService
 from services.audit_service import AuditService
 from services.embedding_service import EmbeddingService
@@ -33,6 +35,7 @@ class RAGService:
         *,
         auth_service: AuthService | None = None,
         audit_service: AuditService | None = None,
+        document_repository: SQLAlchemyDocumentRepository | None = None,
         embedding_service: EmbeddingService | None = None,
         vector_store: QdrantService | None = None,
         llm_service: GroqService | None = None,
@@ -42,6 +45,7 @@ class RAGService:
         self.session = session
         self.auth = auth_service or AuthService()
         self.audit = audit_service or AuditService(session)
+        self.documents = document_repository or SQLAlchemyDocumentRepository(session)
         self.embedding_service = embedding_service or EmbeddingService()
         self.vector_store = vector_store or QdrantService()
         self.llm_service = llm_service or GroqService()
@@ -70,7 +74,7 @@ class RAGService:
             matches = self.vector_store.search(
                 query_vector,
                 user=user,
-                limit=self.top_k,
+                limit=self.top_k * 10,
             )
         except VectorStoreError as exc:
             logger.exception("Authorized Qdrant search failed for user %s", user.id)
@@ -78,12 +82,50 @@ class RAGService:
                 "The approved document repository is unavailable."
             ) from exc
 
+        if matches:
+            try:
+                with self.session.begin():
+                    version_statuses = self.documents.get_version_statuses(
+                        {chunk.document_version_id for chunk in matches}
+                    )
+            except SQLAlchemyError as exc:
+                logger.exception(
+                    "Could not load document version states for user %s",
+                    user.id,
+                )
+                raise RAGServiceError(
+                    "Could not verify retrieved document versions."
+                ) from exc
+            matches = [
+                chunk.model_copy(
+                    update={
+                        "lifecycle_status": version_statuses[
+                            chunk.document_version_id
+                        ]
+                    }
+                )
+                for chunk in matches
+                if chunk.document_version_id in version_statuses
+            ]
+
         relevant_chunks = [
             chunk
             for chunk in matches
             if chunk.similarity is not None
             and chunk.similarity >= self.minimum_similarity
         ]
+        status_priority = {
+            DocumentLifecycleStatus.CURRENT: 0,
+            DocumentLifecycleStatus.DRAFT: 1,
+            DocumentLifecycleStatus.SUPERSEDED: 2,
+        }
+        relevant_chunks.sort(
+            key=lambda chunk: (
+                status_priority[chunk.lifecycle_status],
+                -(chunk.similarity or 0.0),
+            )
+        )
+        relevant_chunks = relevant_chunks[: self.top_k]
         if not relevant_chunks:
             logger.info("No sufficiently relevant sources found for user %s", user.id)
             response = ChatResponse(
@@ -99,6 +141,7 @@ class RAGService:
                 f"[{citation.citation_id}] Document: {citation.document_filename} "
                 f"(title: {citation.document_title}; version: "
                 f"{citation.version_number or 'unknown'}; "
+                f"status: {citation.lifecycle_status.value}; "
                 f"section: {citation.section_title}; "
                 f"page: {citation.page_number or 'not specified'})\n"
                 f"Excerpt: {citation.excerpt}"
@@ -147,6 +190,7 @@ class RAGService:
             conversation_id=request.conversation_id,
             answer=answer,
             citations=used_citations,
+            warnings=self._build_warnings(used_citations),
         )
         self._record_chat(user, question, response, citations)
         return response
@@ -169,6 +213,7 @@ class RAGService:
                     "name": source.document_filename,
                     "title": source.document_title,
                     "version_number": source.version_number,
+                    "lifecycle_status": source.lifecycle_status.value,
                     "sections": [],
                 },
             )
@@ -188,7 +233,35 @@ class RAGService:
                     answer=response.answer,
                     documents_accessed=list(documents.values()),
                     conversation_id=response.conversation_id,
+                    warnings=response.warnings,
                 )
         except SQLAlchemyError as exc:
             logger.exception("Could not persist chat audit record for user %s", user.id)
             raise RAGServiceError("Could not save the chat audit record.") from exc
+
+    @staticmethod
+    def _build_warnings(citations: list[SourceCitation]) -> list[str]:
+        warnings = []
+        seen_versions = set()
+        for citation in citations:
+            status = citation.lifecycle_status
+            if status == DocumentLifecycleStatus.CURRENT:
+                continue
+            key = (citation.document_id, citation.document_version_id)
+            if key in seen_versions:
+                continue
+            seen_versions.add(key)
+            version = citation.version_number or "unknown"
+            if status == DocumentLifecycleStatus.DRAFT:
+                warnings.append(
+                    f"This answer uses draft document "
+                    f"'{citation.document_title}' (version {version}); "
+                    "its content may not be approved."
+                )
+            elif status == DocumentLifecycleStatus.SUPERSEDED:
+                warnings.append(
+                    f"This answer uses superseded document "
+                    f"'{citation.document_title}' (version {version}); "
+                    "a newer current version exists."
+                )
+        return warnings

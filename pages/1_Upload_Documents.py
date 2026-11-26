@@ -4,6 +4,7 @@ import streamlit as st
 from sqlalchemy.exc import SQLAlchemyError
 
 from database.session import get_session, initialize_database
+from models.document import DocumentLifecycleStatus
 from services.auth_service import AuthService
 from services.document_service import DocumentService
 from services.qdrant_service import VectorStoreError
@@ -61,6 +62,15 @@ with st.form("upload-document-form"):
         options=allowed_classifications,
         format_func=lambda value: value.value.title(),
     )
+    lifecycle_status = st.selectbox(
+        "Version status",
+        options=[
+            DocumentLifecycleStatus.DRAFT,
+            DocumentLifecycleStatus.CURRENT,
+        ],
+        format_func=lambda value: value.value.title(),
+        help="Uploading a version as Current supersedes the existing Current version.",
+    )
     submitted = st.form_submit_button("Upload and index", type="primary")
 
 if submitted:
@@ -81,10 +91,12 @@ if submitted:
                     version_number=int(version_number),
                     classification=classification,
                     auth_subject=auth_subject,
+                    lifecycle_status=lifecycle_status,
                 )
         st.success(
             f"Uploaded **{document_title.strip()}**, version "
-            f"**{version.version_number}** ({version.index_status})."
+            f"**{version.version_number}** ({version.index_status}, "
+            f"{version.lifecycle_status.value})."
         )
     except PermissionError as exc:
         st.error(f"Access denied: {exc}")

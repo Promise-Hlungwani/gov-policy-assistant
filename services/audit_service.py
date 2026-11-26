@@ -4,6 +4,7 @@ from uuid import UUID
 from sqlalchemy.orm import Session
 
 from models.access import UserRole
+from models.document import DocumentLifecycleStatus
 from repositories.sqlalchemy_audit_repository import SQLAlchemyAuditRepository
 
 
@@ -20,6 +21,8 @@ class AuditService:
         title: str,
         classification: str,
         version_number: int,
+        lifecycle_status: DocumentLifecycleStatus = DocumentLifecycleStatus.CURRENT,
+        superseded_version_number: int | None = None,
     ) -> None:
         self.repository.add(
             actor_id=actor_id,
@@ -31,6 +34,8 @@ class AuditService:
                 "title": title,
                 "classification": classification,
                 "version_number": version_number,
+                "lifecycle_status": lifecycle_status.value,
+                "superseded_version_number": superseded_version_number,
             },
         )
 
@@ -43,6 +48,7 @@ class AuditService:
         answer: str,
         documents_accessed: list[dict[str, Any]],
         conversation_id: UUID | None,
+        warnings: list[str] | None = None,
     ) -> None:
         self.repository.add(
             actor_id=actor_id,
@@ -54,5 +60,6 @@ class AuditService:
                 "question": question,
                 "answer": answer,
                 "documents_accessed": documents_accessed,
+                "warnings": warnings or [],
             },
         )

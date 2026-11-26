@@ -19,6 +19,7 @@ def build_citations(chunks: list[DocumentChunk]) -> list[SourceCitation]:
                 document_title=title,
                 document_filename=filename,
                 version_number=version_number,
+                lifecycle_status=chunk.lifecycle_status,
                 section_title=section_title,
                 page_number=chunk.page_number,
                 chunk_id=chunk.id,
