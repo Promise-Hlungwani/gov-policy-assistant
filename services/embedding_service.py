@@ -1,13 +1,19 @@
-from functools import lru_cache
+from __future__ import annotations
 
-from sentence_transformers import SentenceTransformer
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
 from config.settings import settings
 from models.document import DocumentChunk
 
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
+
 
 @lru_cache(maxsize=1)
 def _load_model() -> SentenceTransformer:
+    from sentence_transformers import SentenceTransformer
+
     return SentenceTransformer(settings.embedding_model)
 
 

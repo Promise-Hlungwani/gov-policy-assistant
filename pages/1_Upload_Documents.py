@@ -90,8 +90,7 @@ if submitted:
         st.error(f"Access denied: {exc}")
     except ValueError as exc:
         st.error(str(exc))
-    except VectorStoreError as exc:
-        logger.exception("Qdrant indexing failed: %s", exc)
+    except VectorStoreError:
         st.error(
             "Document metadata was saved, but Qdrant indexing failed. "
             "Check the Qdrant configuration and server logs."
