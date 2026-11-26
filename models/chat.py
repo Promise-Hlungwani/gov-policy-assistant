@@ -2,7 +2,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from models.document import DocumentLifecycleStatus
+from models.access import DocumentClassification
+from models.document import DocumentLifecycleStatus, KnowledgeSourceType
 
 
 class ChatRequest(BaseModel):
@@ -18,6 +19,9 @@ class SourceCitation(BaseModel):
     document_version_id: UUID
     document_title: str
     document_filename: str
+    classification: DocumentClassification = DocumentClassification.PUBLIC
+    source_type: KnowledgeSourceType = KnowledgeSourceType.UPLOADED_DOCUMENT
+    source_url: str | None = None
     version_number: int | None
     section_title: str
     page_number: int | None = None
@@ -32,3 +36,5 @@ class ChatResponse(BaseModel):
     answer: str
     citations: list[SourceCitation] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    sources_searched: list[KnowledgeSourceType] = Field(default_factory=list)
+    unavailable_sources: list[KnowledgeSourceType] = Field(default_factory=list)

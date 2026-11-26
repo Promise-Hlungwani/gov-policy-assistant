@@ -30,6 +30,7 @@ class UserORM(Base):
     auth_subject: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str | None] = mapped_column(String(512), nullable=True)
     role: Mapped[UserRole] = mapped_column(
         SqlEnum(
             UserRole,

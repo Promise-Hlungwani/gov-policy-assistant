@@ -1,8 +1,15 @@
+from uuid import UUID
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from database.models import UserORM
 from models.access import DocumentClassification, UserRole
+from utils.passwords import verify_password
+
+ACCESS_DENIED_MESSAGE = (
+    "Access denied. You are not authorized to access this document."
+)
 
 ROLE_CLASSIFICATIONS = {
     UserRole.CITIZEN: frozenset({DocumentClassification.PUBLIC}),
@@ -20,25 +27,43 @@ ROLE_CLASSIFICATIONS = {
 }
 
 
+class AccountPendingError(PermissionError):
+    pass
+
+
 class AuthService:
-    def get_user_for_subject(self, session: Session, subject: str) -> UserORM:
-        if not subject:
-            raise PermissionError("An authenticated identity is required.")
+    def authenticate(
+        self,
+        session: Session,
+        email: str,
+        password: str,
+    ) -> UserORM | None:
+        normalized_email = email.strip().lower()
         user = session.scalar(
             select(UserORM).where(
-                UserORM.auth_subject == subject,
-                UserORM.is_active.is_(True),
+                UserORM.email == normalized_email,
             )
         )
         if user is None:
-            raise PermissionError(
-                "Your account is not provisioned. Contact an administrator."
+            verify_password(password, None)
+            return None
+        if not verify_password(password, user.password_hash):
+            return None
+        if not user.is_active:
+            raise AccountPendingError(
+                "Your account is awaiting administrator approval."
             )
+        return user
+
+    def get_active_user(self, session: Session, user_id: UUID) -> UserORM:
+        user = session.get(UserORM, user_id)
+        if user is None or not user.is_active:
+            raise PermissionError(ACCESS_DENIED_MESSAGE)
         return user
 
     def allowed_classifications(self, user: UserORM) -> list[DocumentClassification]:
         if not user.is_active:
-            raise PermissionError("Your account is inactive.")
+            raise PermissionError(ACCESS_DENIED_MESSAGE)
         return sorted(ROLE_CLASSIFICATIONS[user.role], key=lambda item: item.value)
 
     def require_upload_permission(
@@ -47,9 +72,7 @@ class AuthService:
         classification: DocumentClassification,
     ) -> None:
         if classification not in self.allowed_classifications(user):
-            raise PermissionError(
-                f"Your role cannot upload {classification.value} documents."
-            )
+            raise PermissionError(ACCESS_DENIED_MESSAGE)
 
     def require_view_permission(
         self,
@@ -57,6 +80,4 @@ class AuthService:
         classification: DocumentClassification,
     ) -> None:
         if classification not in self.allowed_classifications(user):
-            raise PermissionError(
-                f"Your role cannot access {classification.value} documents."
-            )
+            raise PermissionError(ACCESS_DENIED_MESSAGE)

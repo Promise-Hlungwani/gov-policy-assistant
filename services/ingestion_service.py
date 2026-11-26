@@ -42,10 +42,11 @@ class DocumentIngestionService:
     ) -> PreparedIngestion:
         if not content:
             raise ValueError("The uploaded file is empty.")
-        max_size = settings.max_upload_size_mb * 1024 * 1024
+        max_upload_size_mb = min(max(settings.max_upload_size_mb, 1), 20)
+        max_size = max_upload_size_mb * 1024 * 1024
         if len(content) > max_size:
             raise ValueError(
-                f"File exceeds the {settings.max_upload_size_mb} MB upload limit."
+                f"File exceeds the {max_upload_size_mb} MB upload limit."
             )
 
         try:

@@ -1,5 +1,6 @@
 import unittest
 from uuid import uuid4
+from unittest.mock import patch
 
 from models.access import DocumentClassification
 from services.ingestion_service import DocumentIngestionService
@@ -71,4 +72,14 @@ class DocumentIngestionServiceTests(unittest.TestCase):
                     classification=DocumentClassification.PUBLIC,
                     document_title="Policy",
                     version_number=1,
+                )
+
+    def test_upload_size_is_capped_at_twenty_megabytes(self) -> None:
+        with patch("services.ingestion_service.settings.max_upload_size_mb", 100):
+            with self.assertRaisesRegex(ValueError, "20 MB upload limit"):
+                self.service.prepare(
+                    content=b"x" * (20 * 1024 * 1024 + 1),
+                    filename="policy.pdf",
+                    document_id=self.document_id,
+                    document_version_id=self.version_id,
                 )

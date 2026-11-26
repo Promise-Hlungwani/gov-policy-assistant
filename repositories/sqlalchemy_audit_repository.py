@@ -13,7 +13,7 @@ class SQLAlchemyAuditRepository:
     def add(
         self,
         *,
-        actor_id: UUID,
+        actor_id: UUID | None,
         action: str,
         resource_type: str,
         resource_id: UUID | None,

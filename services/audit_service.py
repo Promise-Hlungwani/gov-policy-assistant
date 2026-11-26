@@ -49,6 +49,8 @@ class AuditService:
         documents_accessed: list[dict[str, Any]],
         conversation_id: UUID | None,
         warnings: list[str] | None = None,
+        sources_searched: list[str] | None = None,
+        unavailable_sources: list[str] | None = None,
     ) -> None:
         self.repository.add(
             actor_id=actor_id,
@@ -61,5 +63,37 @@ class AuditService:
                 "answer": answer,
                 "documents_accessed": documents_accessed,
                 "warnings": warnings or [],
+                "sources_searched": sources_searched or [],
+                "unavailable_sources": unavailable_sources or [],
             },
+        )
+
+    def record_registration_request(
+        self,
+        *,
+        account_id: UUID,
+        email: str,
+    ) -> None:
+        self.repository.add(
+            actor_id=None,
+            action="user.registration.requested",
+            resource_type="user",
+            resource_id=account_id,
+            details={"email": email},
+        )
+
+    def record_account_approval(
+        self,
+        *,
+        actor_id: UUID,
+        account_id: UUID,
+        email: str,
+        role: UserRole,
+    ) -> None:
+        self.repository.add(
+            actor_id=actor_id,
+            action="user.registration.approved",
+            resource_type="user",
+            resource_id=account_id,
+            details={"email": email, "assigned_role": role.value},
         )

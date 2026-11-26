@@ -6,8 +6,13 @@ from uuid import uuid4
 from database.models import AuditEventORM
 from models.access import UserRole
 from models.chat import ChatRequest
-from models.document import DocumentChunk, DocumentLifecycleStatus
+from models.document import (
+    DocumentChunk,
+    DocumentLifecycleStatus,
+    KnowledgeSourceType,
+)
 from services.audit_service import AuditService
+from services.qdrant_service import VectorStoreError
 from services.rag_service import FALLBACK_ANSWER, RAGService
 
 
@@ -26,7 +31,8 @@ class FakeAuthService:
     def __init__(self, user) -> None:
         self.user = user
 
-    def get_user_for_subject(self, session, auth_subject):
+    def get_active_user(self, session, user_id):
+        assert user_id == self.user.id
         return self.user
 
 
@@ -60,11 +66,26 @@ class FakeEmbeddingService:
 class FakeVectorStore:
     def __init__(self, chunks: list[DocumentChunk]) -> None:
         self.chunks = chunks
+        self.repository_chunks = []
+        self.web_chunks = []
         self.searched_as = None
+        self.search_error = None
+        self.search_order = []
 
     def search(self, query_vector, *, user, limit):
+        self.search_order.append(KnowledgeSourceType.UPLOADED_DOCUMENT)
         self.searched_as = user
+        if self.search_error is not None:
+            raise self.search_error
         return self.chunks
+
+    def search_government_repository(self, query_vector, *, user, limit):
+        self.search_order.append(KnowledgeSourceType.GOVERNMENT_REPOSITORY)
+        return self.repository_chunks
+
+    def search_government_web_sources(self, query_vector, *, user, limit):
+        self.search_order.append(KnowledgeSourceType.GOVERNMENT_WEBSITE)
+        return self.web_chunks
 
 
 class FakeLLMService:
@@ -126,12 +147,12 @@ class RAGServiceTests(unittest.TestCase):
 
         response = service.answer(
             ChatRequest(question="When does eligibility begin?"),
-            auth_subject="trusted-subject",
+            user_id=self.user.id,
         )
 
         self.assertEqual(
             response.answer,
-            "I could not find this information in the approved document repository.",
+            FALLBACK_ANSWER,
         )
         self.assertEqual(response.citations, [])
         self.assertEqual(self.llm.calls, [])
@@ -143,7 +164,7 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(event["question"], "When does eligibility begin?")
         self.assertEqual(
             event["answer"],
-            "I could not find this information in the approved document repository.",
+            FALLBACK_ANSWER,
         )
         self.assertEqual(event["documents_accessed"], [])
 
@@ -152,12 +173,12 @@ class RAGServiceTests(unittest.TestCase):
 
         response = service.answer(
             ChatRequest(question="When does eligibility begin?"),
-            auth_subject="trusted-subject",
+            user_id=self.user.id,
         )
 
         self.assertEqual(
             response.answer,
-            "I could not find this information in the approved document repository.",
+            FALLBACK_ANSWER,
         )
         self.assertEqual(self.llm.calls, [])
         self.assertEqual(self.audit.events[0]["documents_accessed"], [])
@@ -167,19 +188,20 @@ class RAGServiceTests(unittest.TestCase):
 
         response = service.answer(
             ChatRequest(question="When does eligibility begin?"),
-            auth_subject="trusted-subject",
+            user_id=self.user.id,
         )
 
         self.assertEqual(response.answer, "Supported answer [1]")
         self.assertEqual(response.citations[0].document_filename, "benefits-policy.pdf")
         self.assertEqual(response.citations[0].version_number, 3)
+        self.assertEqual(response.citations[0].classification.value, "public")
         self.assertEqual(
             response.citations[0].lifecycle_status,
             DocumentLifecycleStatus.CURRENT,
         )
         self.assertEqual(response.citations[0].section_title, "Eligibility")
         self.assertIn("benefits-policy.pdf", self.llm.calls[0][1])
-        self.assertIn("Section: Eligibility", self.llm.calls[0][1])
+        self.assertIn("section: Eligibility", self.llm.calls[0][1])
         self.assertEqual(len(self.audit.events), 1)
         self.assertEqual(
             self.audit.events[0]["documents_accessed"],
@@ -193,18 +215,98 @@ class RAGServiceTests(unittest.TestCase):
                     "title": "Benefits Policy",
                     "version_number": 3,
                     "lifecycle_status": "current",
+                    "source_type": "uploaded_document",
+                    "source_url": None,
                     "sections": [{"section": "Eligibility", "page": 4}],
                 }
             ],
         )
         self.assertEqual(response.warnings, [])
 
+    def test_reports_progress_through_source_review_and_generation(self) -> None:
+        service = self.build_service([make_chunk()])
+        progress = []
+
+        service.answer(
+            ChatRequest(question="When does eligibility begin?"),
+            user_id=self.user.id,
+            progress_callback=progress.append,
+        )
+
+        self.assertEqual(
+            progress,
+            [
+                "Searching uploaded documents...",
+                "Searching the government knowledge repository...",
+                "Searching approved government websites...",
+                "Reviewing relevant policy sources...",
+                "Generating trusted response...",
+            ],
+        )
+
+    def test_searches_public_sources_when_no_uploaded_documents_exist(self) -> None:
+        service = self.build_service([])
+        public_chunk = make_chunk().model_copy(
+            update={
+                "source_type": KnowledgeSourceType.GOVERNMENT_REPOSITORY,
+                "source_url": "repo://public-service-regulations.pdf",
+            }
+        )
+        self.vector_store.repository_chunks = [public_chunk]
+
+        response = service.answer(
+            ChatRequest(question="What are the public service regulations?"),
+            user_id=self.user.id,
+        )
+
+        self.assertEqual(response.answer, "Supported answer [1]")
+        self.assertEqual(
+            response.citations[0].source_type,
+            KnowledgeSourceType.GOVERNMENT_REPOSITORY,
+        )
+        self.assertEqual(
+            self.vector_store.search_order,
+            [
+                KnowledgeSourceType.UPLOADED_DOCUMENT,
+                KnowledgeSourceType.GOVERNMENT_REPOSITORY,
+                KnowledgeSourceType.GOVERNMENT_WEBSITE,
+            ],
+        )
+        self.assertEqual(
+            response.sources_searched,
+            self.vector_store.search_order,
+        )
+
+    def test_uploaded_source_failure_does_not_block_repository_search(self) -> None:
+        service = self.build_service([])
+        self.vector_store.search_error = VectorStoreError("Qdrant unavailable")
+        self.vector_store.repository_chunks = [
+            make_chunk().model_copy(
+                update={
+                    "source_type": KnowledgeSourceType.GOVERNMENT_REPOSITORY,
+                    "source_url": "repo://public-service-regulations.pdf",
+                }
+            )
+        ]
+
+        with self.assertLogs("services.rag_service", level="ERROR"):
+            response = service.answer(
+                ChatRequest(question="What are the public service regulations?"),
+                user_id=self.user.id,
+            )
+
+        self.assertEqual(response.answer, "Supported answer [1]")
+        self.assertEqual(
+            response.unavailable_sources,
+            [KnowledgeSourceType.UPLOADED_DOCUMENT],
+        )
+
     def test_rejects_answer_with_unknown_citation(self) -> None:
         service = self.build_service([make_chunk()], answer="Unsupported claim [99]")
 
         response = service.answer(
             ChatRequest(question="When does eligibility begin?"),
-            auth_subject="trusted-subject",
+            user_id=self.user.id,
         )
 
         self.assertEqual(response.answer, FALLBACK_ANSWER)
@@ -225,7 +327,7 @@ class RAGServiceTests(unittest.TestCase):
 
         response = service.answer(
             ChatRequest(question="When does eligibility begin?"),
-            auth_subject="trusted-subject",
+            user_id=self.user.id,
         )
 
         self.assertEqual(
@@ -233,6 +335,33 @@ class RAGServiceTests(unittest.TestCase):
             DocumentLifecycleStatus.CURRENT,
         )
         self.assertEqual(response.warnings, [])
+
+    def test_current_public_source_ranks_before_draft_upload(self) -> None:
+        draft = make_chunk(
+            similarity=0.99,
+            lifecycle_status=DocumentLifecycleStatus.DRAFT,
+        )
+        repository = make_chunk(
+            similarity=0.55,
+            lifecycle_status=DocumentLifecycleStatus.CURRENT,
+        ).model_copy(
+            update={
+                "source_type": KnowledgeSourceType.GOVERNMENT_REPOSITORY,
+                "source_url": "repo://current-policy.pdf",
+            }
+        )
+        service = self.build_service([draft])
+        self.vector_store.repository_chunks = [repository]
+
+        response = service.answer(
+            ChatRequest(question="What is the current policy?"),
+            user_id=self.user.id,
+        )
+
+        self.assertEqual(
+            response.citations[0].source_type,
+            KnowledgeSourceType.GOVERNMENT_REPOSITORY,
+        )
 
     def test_warns_when_answer_uses_draft_and_superseded_versions(self) -> None:
         draft = make_chunk(lifecycle_status=DocumentLifecycleStatus.DRAFT)
@@ -246,7 +375,7 @@ class RAGServiceTests(unittest.TestCase):
 
         response = service.answer(
             ChatRequest(question="Summarize the available rules."),
-            auth_subject="trusted-subject",
+            user_id=self.user.id,
         )
 
         self.assertEqual(len(response.warnings), 2)
@@ -285,6 +414,11 @@ class ChatAuditTests(unittest.TestCase):
             documents_accessed=documents_accessed,
             conversation_id=conversation_id,
             warnings=["Draft source warning"],
+            sources_searched=[
+                KnowledgeSourceType.UPLOADED_DOCUMENT.value,
+                KnowledgeSourceType.GOVERNMENT_REPOSITORY.value,
+            ],
+            unavailable_sources=[KnowledgeSourceType.GOVERNMENT_WEBSITE.value],
         )
 
         event = session.added[0]
@@ -300,6 +434,13 @@ class ChatAuditTests(unittest.TestCase):
                 "answer": "It begins on the effective date [1].",
                 "documents_accessed": documents_accessed,
                 "warnings": ["Draft source warning"],
+                "sources_searched": [
+                    KnowledgeSourceType.UPLOADED_DOCUMENT.value,
+                    KnowledgeSourceType.GOVERNMENT_REPOSITORY.value,
+                ],
+                "unavailable_sources": [
+                    KnowledgeSourceType.GOVERNMENT_WEBSITE.value
+                ],
             },
         )
         self.assertIsNotNone(AuditEventORM.__table__.c.created_at.server_default)

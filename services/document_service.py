@@ -1,7 +1,7 @@
 import logging
 from hashlib import sha256
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy.orm import Session
 
@@ -47,7 +47,7 @@ class DocumentService:
         title: str,
         version_number: int,
         classification: DocumentClassification,
-        auth_subject: str,
+        user_id: UUID,
         lifecycle_status: DocumentLifecycleStatus = DocumentLifecycleStatus.CURRENT,
     ) -> DocumentVersion:
         safe_filename = Path(filename).name
@@ -74,7 +74,7 @@ class DocumentService:
         if mime_type is None:
             raise ValueError("Upload a PDF or DOCX document.")
         with self.session.begin():
-            actor = self.auth.get_user_for_subject(self.session, auth_subject)
+            actor = self.auth.get_active_user(self.session, user_id)
             self.auth.require_upload_permission(actor, classification)
 
             document = self.repository.get_for_owner_and_title(
