@@ -1,11 +1,15 @@
 import logging
 import re
+from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from config.settings import settings
-from models.chat import ChatRequest, ChatResponse
+from database.models import UserORM
+from models.chat import ChatRequest, ChatResponse, SourceCitation
 from services.auth_service import AuthService
+from services.audit_service import AuditService
 from services.embedding_service import EmbeddingService
 from services.groq_service import GroqService, GroqServiceError
 from services.qdrant_service import QdrantService, VectorStoreError
@@ -28,6 +32,7 @@ class RAGService:
         session: Session,
         *,
         auth_service: AuthService | None = None,
+        audit_service: AuditService | None = None,
         embedding_service: EmbeddingService | None = None,
         vector_store: QdrantService | None = None,
         llm_service: GroqService | None = None,
@@ -36,6 +41,7 @@ class RAGService:
     ) -> None:
         self.session = session
         self.auth = auth_service or AuthService()
+        self.audit = audit_service or AuditService(session)
         self.embedding_service = embedding_service or EmbeddingService()
         self.vector_store = vector_store or QdrantService()
         self.llm_service = llm_service or GroqService()
@@ -80,10 +86,12 @@ class RAGService:
         ]
         if not relevant_chunks:
             logger.info("No sufficiently relevant sources found for user %s", user.id)
-            return ChatResponse(
+            response = ChatResponse(
                 conversation_id=request.conversation_id,
                 answer=FALLBACK_ANSWER,
             )
+            self._record_chat(user, question, response, [])
+            return response
 
         citations = build_citations(relevant_chunks)
         context = "\n\n".join(
@@ -125,16 +133,62 @@ class RAGService:
                 "Grounded answer lacked valid citations for user %s",
                 user.id,
             )
-            return ChatResponse(
+            response = ChatResponse(
                 conversation_id=request.conversation_id,
                 answer=FALLBACK_ANSWER,
             )
+            self._record_chat(user, question, response, citations)
+            return response
 
         used_citations = [
             citation for citation in citations if citation.citation_id in citation_ids
         ]
-        return ChatResponse(
+        response = ChatResponse(
             conversation_id=request.conversation_id,
             answer=answer,
             citations=used_citations,
         )
+        self._record_chat(user, question, response, citations)
+        return response
+
+    def _record_chat(
+        self,
+        user: UserORM,
+        question: str,
+        response: ChatResponse,
+        accessed_sources: list[SourceCitation],
+    ) -> None:
+        documents: dict[tuple[str, str], dict[str, Any]] = {}
+        for source in accessed_sources:
+            key = (str(source.document_id), str(source.document_version_id))
+            document = documents.setdefault(
+                key,
+                {
+                    "document_id": key[0],
+                    "document_version_id": key[1],
+                    "name": source.document_filename,
+                    "title": source.document_title,
+                    "version_number": source.version_number,
+                    "sections": [],
+                },
+            )
+            section = {
+                "section": source.section_title,
+                "page": source.page_number,
+            }
+            if section not in document["sections"]:
+                document["sections"].append(section)
+
+        try:
+            with self.session.begin():
+                self.audit.record_chat(
+                    actor_id=user.id,
+                    role=user.role,
+                    question=question,
+                    answer=response.answer,
+                    documents_accessed=list(documents.values()),
+                    conversation_id=response.conversation_id,
+                )
+        except SQLAlchemyError as exc:
+            logger.exception("Could not persist chat audit record for user %s", user.id)
+            raise RAGServiceError("Could not save the chat audit record.") from exc

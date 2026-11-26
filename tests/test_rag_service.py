@@ -3,15 +3,23 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from uuid import uuid4
 
+from database.models import AuditEventORM
 from models.access import UserRole
 from models.chat import ChatRequest
 from models.document import DocumentChunk
+from services.audit_service import AuditService
 from services.rag_service import FALLBACK_ANSWER, RAGService
 
 
 class FakeSession:
+    def __init__(self) -> None:
+        self.added = []
+
     def begin(self):
         return nullcontext()
+
+    def add(self, event) -> None:
+        self.added.append(event)
 
 
 class FakeAuthService:
@@ -20,6 +28,14 @@ class FakeAuthService:
 
     def get_user_for_subject(self, session, auth_subject):
         return self.user
+
+
+class FakeAuditService:
+    def __init__(self) -> None:
+        self.events = []
+
+    def record_chat(self, **event) -> None:
+        self.events.append(event)
 
 
 class FakeEmbeddingService:
@@ -74,9 +90,11 @@ class RAGServiceTests(unittest.TestCase):
     def build_service(self, chunks, answer="Supported answer [1]"):
         self.vector_store = FakeVectorStore(chunks)
         self.llm = FakeLLMService(answer)
+        self.audit = FakeAuditService()
         return RAGService(
             FakeSession(),
             auth_service=FakeAuthService(self.user),
+            audit_service=self.audit,
             embedding_service=FakeEmbeddingService(),
             vector_store=self.vector_store,
             llm_service=self.llm,
@@ -99,6 +117,16 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(response.citations, [])
         self.assertEqual(self.llm.calls, [])
         self.assertIs(self.vector_store.searched_as, self.user)
+        self.assertEqual(len(self.audit.events), 1)
+        event = self.audit.events[0]
+        self.assertEqual(event["actor_id"], self.user.id)
+        self.assertEqual(event["role"], self.user.role)
+        self.assertEqual(event["question"], "When does eligibility begin?")
+        self.assertEqual(
+            event["answer"],
+            "I could not find this information in the approved document repository.",
+        )
+        self.assertEqual(event["documents_accessed"], [])
 
     def test_returns_fallback_when_source_confidence_is_low(self) -> None:
         service = self.build_service([make_chunk(similarity=0.2)])
@@ -113,6 +141,7 @@ class RAGServiceTests(unittest.TestCase):
             "I could not find this information in the approved document repository.",
         )
         self.assertEqual(self.llm.calls, [])
+        self.assertEqual(self.audit.events[0]["documents_accessed"], [])
 
     def test_returns_document_version_section_and_valid_citation(self) -> None:
         service = self.build_service([make_chunk()])
@@ -128,6 +157,22 @@ class RAGServiceTests(unittest.TestCase):
         self.assertEqual(response.citations[0].section_title, "Eligibility")
         self.assertIn("benefits-policy.pdf", self.llm.calls[0][1])
         self.assertIn("Section: Eligibility", self.llm.calls[0][1])
+        self.assertEqual(len(self.audit.events), 1)
+        self.assertEqual(
+            self.audit.events[0]["documents_accessed"],
+            [
+                {
+                    "document_id": str(response.citations[0].document_id),
+                    "document_version_id": str(
+                        response.citations[0].document_version_id
+                    ),
+                    "name": "benefits-policy.pdf",
+                    "title": "Benefits Policy",
+                    "version_number": 3,
+                    "sections": [{"section": "Eligibility", "page": 4}],
+                }
+            ],
+        )
 
     def test_rejects_answer_with_unknown_citation(self) -> None:
         service = self.build_service([make_chunk()], answer="Unsupported claim [99]")
@@ -139,6 +184,50 @@ class RAGServiceTests(unittest.TestCase):
 
         self.assertEqual(response.answer, FALLBACK_ANSWER)
         self.assertEqual(response.citations, [])
+        self.assertEqual(len(self.audit.events), 1)
+        self.assertEqual(len(self.audit.events[0]["documents_accessed"]), 1)
+
+
+class ChatAuditTests(unittest.TestCase):
+    def test_records_chat_fields_in_postgres_audit_event(self) -> None:
+        session = FakeSession()
+        service = AuditService(session)
+        actor_id = uuid4()
+        conversation_id = uuid4()
+        documents_accessed = [
+            {
+                "document_id": str(uuid4()),
+                "document_version_id": str(uuid4()),
+                "name": "benefits-policy.pdf",
+                "version_number": 3,
+                "sections": [{"section": "Eligibility", "page": 4}],
+            }
+        ]
+
+        service.record_chat(
+            actor_id=actor_id,
+            role=UserRole.GOVERNMENT_OFFICER,
+            question="When does eligibility begin?",
+            answer="It begins on the effective date [1].",
+            documents_accessed=documents_accessed,
+            conversation_id=conversation_id,
+        )
+
+        event = session.added[0]
+        self.assertIsInstance(event, AuditEventORM)
+        self.assertEqual(event.actor_id, actor_id)
+        self.assertEqual(event.action, "chat.answered")
+        self.assertEqual(event.resource_id, conversation_id)
+        self.assertEqual(
+            event.details,
+            {
+                "role": "government_officer",
+                "question": "When does eligibility begin?",
+                "answer": "It begins on the effective date [1].",
+                "documents_accessed": documents_accessed,
+            },
+        )
+        self.assertIsNotNone(AuditEventORM.__table__.c.created_at.server_default)
 
 
 if __name__ == "__main__":

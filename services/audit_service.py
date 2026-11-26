@@ -1,7 +1,9 @@
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy.orm import Session
 
+from models.access import UserRole
 from repositories.sqlalchemy_audit_repository import SQLAlchemyAuditRepository
 
 
@@ -29,5 +31,28 @@ class AuditService:
                 "title": title,
                 "classification": classification,
                 "version_number": version_number,
+            },
+        )
+
+    def record_chat(
+        self,
+        *,
+        actor_id: UUID,
+        role: UserRole,
+        question: str,
+        answer: str,
+        documents_accessed: list[dict[str, Any]],
+        conversation_id: UUID | None,
+    ) -> None:
+        self.repository.add(
+            actor_id=actor_id,
+            action="chat.answered",
+            resource_type="chat_interaction",
+            resource_id=conversation_id,
+            details={
+                "role": role.value,
+                "question": question,
+                "answer": answer,
+                "documents_accessed": documents_accessed,
             },
         )

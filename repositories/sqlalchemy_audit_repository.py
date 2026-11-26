@@ -16,7 +16,7 @@ class SQLAlchemyAuditRepository:
         actor_id: UUID,
         action: str,
         resource_type: str,
-        resource_id: UUID,
+        resource_id: UUID | None,
         details: dict[str, Any],
     ) -> None:
         self.session.add(
